@@ -1,0 +1,26 @@
+{
+  "name": "whatsapp-bot-baileys",
+  "version": "1.0.0",
+  "description": "Bot de WhatsApp con Baileys, botones interactivos y sistema de plugins",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": ["whatsapp", "bot", "baileys", "plugins"],
+  "author": "Tu nombre",
+  "license": "MIT",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.6.0",
+    "axios": "^1.6.2",
+    "fs-extra": "^11.2.0",
+    "qrcode-terminal": "^0.12.0",
+    "yt-search": "^2.10.4",
+    "chalk": "^5.3.0",
+    "moment": "^2.30.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
