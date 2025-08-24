@@ -1,0 +1,21 @@
+# Dependencias
+node_modules/
+npm-debug.log*
+
+# Sesión de WhatsApp (contiene datos sensibles)
+session/
+
+# Logs
+*.log
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de configuración local
+.env
+.env.local
+
+# Archivos temporales
+temp/
+tmp/
