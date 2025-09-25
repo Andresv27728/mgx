@@ -1,4 +1,5 @@
 import { makeWASocket, DisconnectReason, useMultiFileAuthState } from '@whiskeysockets/baileys'
+import pino from 'pino'
 import qrcode from 'qrcode-terminal'
 import fs from 'fs-extra'
 import path from 'path'
@@ -18,10 +19,7 @@ async function startBot() {
   try {
     sock = makeWASocket({
       auth: state,
-      printQRInTerminal: true,
-      logger: {
-        level: 'silent'
-      }
+      logger: pino({ level: 'silent' })
     })
 
     // Inicializar manejador de errores
