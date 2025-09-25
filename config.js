@@ -2,7 +2,7 @@ export default {
   // Configuración del bot
   botName: "MiBot WhatsApp",
   ownerName: "Propietario del Bot",
-  ownerNumber: "1234567890@s.whatsapp.net", // Cambia por tu número
+  ownerNumber: "573133374132@s.whatsapp.net", // Cambia por tu número
   
   // APIs
   ytmp3API: "https://myapiadonix.vercel.app/api/ytmp3",
