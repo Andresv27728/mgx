@@ -20,22 +20,19 @@ import { loadPlugins } from './lib/pluginManager.js';
 import { handleMessage } from './lib/messageHandler.js';
 import ErrorHandler from './lib/errorHandler.js';
 
-// --- Logger Setup ---
-const logger = pino({ level: 'silent' });
-
-// --- Original Globals for Plugin System ---
+// --- Original Globals ---
 const { state, saveCreds } = await useMultiFileAuthState(config.sessionPath);
 let sock;
 let errorHandler;
 const plugins = new Map();
 
-// --- Main Connection Function ---
-async function connectToWhatsApp() {
+/**
+ * Main function to start the bot connection process.
+ * This function now includes the logic to choose a connection method.
+ */
+async function startBot() {
   const { version, isLatest } = await fetchLatestBaileysVersion();
-  console.log(`[info] Usando Baileys v${version.join('.')}, ¿es la última versión?: ${isLatest}`);
-
-  const PhoneNumberUtil = pkgPhone.PhoneNumberUtil;
-  const phoneUtil = PhoneNumberUtil.getInstance();
+  console.log(chalk.cyan(`[info] Usando Baileys v${version.join('.')}, ¿es la última versión?: ${isLatest}`));
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
   const ask = (q) => new Promise(res => rl.question(q, ans => res(ans.trim())));
@@ -43,6 +40,7 @@ async function connectToWhatsApp() {
   let option = null;
   let phoneNumber = null;
 
+  // Show connection menu ONLY if no session is registered
   if (!state.creds.registered) {
     const menuDesign = `${chalk.cyanBright('╭─────────────────────────────◉')}\n`
       + `${chalk.cyanBright('│')} ${chalk.red.bgBlueBright.bold('    ⚙ MÉTODO DE CONEXIÓN BOT    ')}\n`
@@ -53,21 +51,17 @@ async function connectToWhatsApp() {
       + `${chalk.cyanBright('╰─────────────────────────────◉')}\n`;
     do {
       option = await ask(menuDesign + chalk.green('Ingresa una opción (1-2): '));
-      if (!/^[1-2]$/.test(option)) console.log(chalk.red('Ingresa 1 o 2.'));
-    } while (!['1','2'].includes(option));
+    } while (!['1', '2'].includes(option));
 
     if (option === '2') {
+      const PhoneNumberUtil = pkgPhone.PhoneNumberUtil.getInstance();
       let valid = false;
       while (!valid) {
-        phoneNumber = await ask(chalk.green('Ingresa tu número con código de país (ej +57300xxxxxxx): '));
-        phoneNumber = phoneNumber.replace(/\s+/g, '');
-        if (!phoneNumber.startsWith('+')) phoneNumber = '+' + phoneNumber.replace(/[^\d]/g,'');
+        phoneNumber = await ask(chalk.green('Ingresa tu número con código de país (ej. +573001234567): '));
         try {
-          valid = phoneUtil.isValidNumber(phoneUtil.parseAndKeepRawInput(phoneNumber));
-        } catch {
-          valid = false;
-        }
-        if (!valid) console.log(chalk.red('Número inválido o formato no reconocido, intenta nuevamente.'));
+          valid = PhoneNumberUtil.isValidNumber(PhoneNumberUtil.parseAndKeepRawInput(phoneNumber));
+        } catch { valid = false; }
+        if (!valid) console.log(chalk.red('Número inválido. Inténtalo de nuevo.'));
       }
     }
     rl.close();
@@ -77,76 +71,86 @@ async function connectToWhatsApp() {
 
   const usingCode = option === '2';
 
-  sock = makeWASocket({
-    version,
-    auth: {
-      creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, logger)
-    },
-    logger,
-    browser: usingCode ? Browsers.macOS('Safari') : ['MiBot', 'Chrome', '1.0.0'],
-  });
+  // The original try...catch block starts here
+  try {
+    sock = makeWASocket({
+      version,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
+      },
+      logger: pino({ level: 'silent' }),
+      browser: usingCode ? Browsers.macOS('Safari') : ['MiBot', 'Chrome', '1.0.0'],
+    });
 
-  errorHandler = new ErrorHandler(sock);
+    // Request pairing code if needed
+    if (usingCode && !sock.authState.creds.registered) {
+      const digits = phoneNumber.replace(/\D/g, '');
+      console.log(chalk.cyan(`[info] Solicitando código de emparejamiento para ${digits}...`));
+      setTimeout(async () => {
+        try {
+          const code = await sock.requestPairingCode(digits);
+          console.log(chalk.bold.white(chalk.bgMagenta('✧ CÓDIGO DE VINCULACIÓN ✧')), chalk.bold.white(code?.match(/.{1,4}/g)?.join('-') || code));
+        } catch (e) {
+          console.error(chalk.red('[error] No se pudo solicitar el código:'), e);
+          startBot(); // Retry
+        }
+      }, 3000);
+    }
+    
+    // Original event handlers are preserved
+    errorHandler = new ErrorHandler(sock);
 
-  if (usingCode && !sock.authState.creds.registered) {
-    const digits = phoneNumber.replace(/\D/g, '');
-    console.log(chalk.cyan(`[info] Solicitando código de emparejamiento para ${digits}...`));
-    setTimeout(async () => {
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+      
+      if (qr && !usingCode) {
+        console.log(chalk.yellow('Escanea el código QR con WhatsApp:'));
+        qrcode.generate(qr, { small: true });
+      }
+      
+      if (connection === 'close') {
+        const statusCode = (lastDisconnect?.error instanceof Boom)?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+        console.log(chalk.red('Conexión cerrada, razón:'), lastDisconnect.error, chalk.yellow('Reconectando...'), shouldReconnect);
+
+        if (shouldReconnect) {
+          startBot();
+        }
+      } else if (connection === 'open') {
+        console.log(chalk.green(`✓ Bot conectado como ${config.botName || sock.user.name}`));
+        // Original plugin loading logic is preserved
+        console.log(chalk.blue('Cargando plugins...'));
+        await loadPlugins(plugins);
+        console.log(chalk.cyan(`Plugins cargados: ${plugins.size}`));
+        console.log(chalk.blue('Bot listo para recibir mensajes'));
+      }
+    });
+
+    sock.ev.on('creds.update', saveCreds);
+
+    sock.ev.on('messages.upsert', async (m) => {
       try {
-        const code = await sock.requestPairingCode(digits);
-        console.log(chalk.bold.white(chalk.bgMagenta('✧ CÓDIGO DE VINCULACIÓN ✧')), chalk.bold.white(code?.match(/.{1,4}/g)?.join('-') || code));
-      } catch (e) {
-        console.error(chalk.red('[error] Error al solicitar el código:'), e);
-        connectToWhatsApp(); // Retry connection
+        const msg = m.messages[0];
+        if (!msg.message || msg.key.fromMe) return;
+
+        // Original message handling logic is preserved
+        await handleMessage(sock, msg, plugins, errorHandler);
+      } catch (error) {
+        console.error(chalk.red('[error] Error procesando mensaje:'), error);
+        if (errorHandler) {
+          await errorHandler.handleSystemError(error, 'Procesamiento de mensajes');
+        }
       }
-    }, 3000);
+    });
+
+  } catch (error) {
+    console.error(chalk.red('Error crítico iniciando bot:'), error);
+    setTimeout(startBot, 10000);
   }
-
-  // --- Original Event Handlers ---
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-    
-    if (qr && !usingCode) {
-      console.log(chalk.yellow('Escanea el código QR con WhatsApp:'));
-      qrcode.generate(qr, { small: true });
-    }
-    
-    if (connection === 'close') {
-      const statusCode = (lastDisconnect?.error instanceof Boom)?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log(chalk.red('Conexión cerrada, razón:'), lastDisconnect.error, chalk.yellow('Reconectando...'), shouldReconnect);
-      
-      if (shouldReconnect) {
-        connectToWhatsApp();
-      }
-    } else if (connection === 'open') {
-      console.log(chalk.green(`✓ Bot conectado como ${config.botName || sock.user.name}`));
-      console.log(chalk.blue('Cargando plugins...'));
-      await loadPlugins(plugins);
-      console.log(chalk.cyan(`Plugins cargados: ${plugins.size}`));
-      console.log(chalk.blue('Bot listo para recibir mensajes'));
-    }
-  });
-
-  sock.ev.on('creds.update', saveCreds);
-  
-  sock.ev.on('messages.upsert', async (m) => {
-    try {
-      const msg = m.messages[0];
-      if (!msg.message || msg.key.fromMe) return;
-      
-      await handleMessage(sock, msg, plugins, errorHandler);
-    } catch (error) {
-      console.error(chalk.red('[error] Error procesando mensaje:'), error);
-      if (errorHandler) {
-        await errorHandler.handleSystemError(error, 'Procesamiento de mensajes');
-      }
-    }
-  });
 }
 
-// --- Original Process-wide Error Handlers ---
+// Original process-wide error handlers are preserved
 process.on('unhandledRejection', async (error) => {
   console.error(chalk.red('[error] Promesa no manejada:'), error);
   if (errorHandler) {
@@ -162,7 +166,7 @@ process.on('uncaughtException', async (error) => {
   process.exit(1);
 });
 
-// --- Start the Bot ---
-connectToWhatsApp();
+// Original bot start call is preserved
+startBot();
 
 export { sock };
